@@ -1,0 +1,14 @@
+# TripoSR dependencies
+omegaconf==2.3.0
+einops==0.7.0
+transformers==4.35.0
+trimesh==4.0.5
+rembg
+huggingface-hub
+imageio[ffmpeg]
+xatlas==0.0.9
+moderngl==5.10.0
+plyfile
+
+# Gradio for demo UI
+gradio
