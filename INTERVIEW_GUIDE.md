@@ -93,7 +93,7 @@
 ---
 
 ## GitHub Repo Link
-**https://github.com/YOUR_USERNAME/triton-3d-kernels** (push before interview!)
+**https://github.com/iambhuvan/triton-3d-kernels**
 
 ## Live Demo Link
 **https://bnallamo--triton-3d-demo-launch-gradio.modal.run**

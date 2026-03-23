@@ -83,36 +83,67 @@ def preprocess_gaussians(
     max_eval = trace / 2 + disc
     radius = 3.0 * torch.sqrt(max_eval + 1e-8)
 
-    # 5. Assign to tiles
+    # 5. Assign to tiles — vectorized with PyTorch (no Python loops)
     tiles_x = (img_w + tile_size - 1) // tile_size
     tiles_y = (img_h + tile_size - 1) // tile_size
     n_tiles = tiles_x * tiles_y
 
-    # Build per-tile lists
-    tile_gaussian_lists = [[] for _ in range(n_tiles)]
     cx, cy = means_2d[:, 0], means_2d[:, 1]
 
-    for i in range(N):
-        x_min = max(0, int((cx[i] - radius[i]) / tile_size))
-        x_max = min(tiles_x - 1, int((cx[i] + radius[i]) / tile_size))
-        y_min = max(0, int((cy[i] - radius[i]) / tile_size))
-        y_max = min(tiles_y - 1, int((cy[i] + radius[i]) / tile_size))
-        for ty in range(y_min, y_max + 1):
-            for tx in range(x_min, x_max + 1):
-                tile_gaussian_lists[ty * tiles_x + tx].append(i)
+    # Compute tile ranges for each Gaussian (vectorized)
+    tx_min = torch.clamp(((cx - radius) / tile_size).int(), 0, tiles_x - 1)
+    tx_max = torch.clamp(((cx + radius) / tile_size).int(), 0, tiles_x - 1)
+    ty_min = torch.clamp(((cy - radius) / tile_size).int(), 0, tiles_y - 1)
+    ty_max = torch.clamp(((cy + radius) / tile_size).int(), 0, tiles_y - 1)
 
-    # 6. Pack into contiguous arrays
-    max_per_tile = max((len(lst) for lst in tile_gaussian_lists), default=0)
-    max_per_tile = max(max_per_tile, 1)
+    # Build (tile_id, gaussian_id) pairs
+    tile_pairs = []
+    # Batch: vectorize over Gaussians that touch exactly 1 tile (common case)
+    single_tile = (tx_min == tx_max) & (ty_min == ty_max)
+    if single_tile.any():
+        st_idx = torch.where(single_tile)[0]
+        st_tiles = ty_min[st_idx] * tiles_x + tx_min[st_idx]
+        tile_pairs.append(torch.stack([st_tiles, st_idx], dim=1))
 
-    tile_gauss_idx = torch.full((n_tiles, max_per_tile), -1, dtype=torch.int32, device=device)
-    tile_gauss_count = torch.zeros(n_tiles, dtype=torch.int32, device=device)
+    # Multi-tile Gaussians: iterate only over those (usually small fraction)
+    multi_idx = torch.where(~single_tile)[0]
+    if len(multi_idx) > 0:
+        for i in multi_idx.tolist():
+            for ty in range(int(ty_min[i]), int(ty_max[i]) + 1):
+                for tx in range(int(tx_min[i]), int(tx_max[i]) + 1):
+                    tile_pairs.append(torch.tensor([[ty * tiles_x + tx, i]], device=device))
 
-    for t in range(n_tiles):
-        count = len(tile_gaussian_lists[t])
-        tile_gauss_count[t] = count
-        if count > 0:
-            tile_gauss_idx[t, :count] = torch.tensor(tile_gaussian_lists[t], dtype=torch.int32)
+    if tile_pairs:
+        all_pairs = torch.cat(tile_pairs, dim=0)  # (M, 2) — [tile_id, gauss_id]
+        tile_ids = all_pairs[:, 0].long()
+        gauss_ids = all_pairs[:, 1].int()
+
+        # Count per tile
+        tile_gauss_count = torch.zeros(n_tiles, dtype=torch.long, device=device)
+        tile_gauss_count.scatter_add_(0, tile_ids,
+                                       torch.ones(len(tile_ids), dtype=torch.long, device=device))
+        tile_gauss_count = tile_gauss_count.int()
+        max_per_tile = int(tile_gauss_count.max().item())
+        max_per_tile = max(max_per_tile, 1)
+
+        # Pack into contiguous array using sorted order
+        tile_gauss_idx = torch.full((n_tiles, max_per_tile), -1, dtype=torch.int32, device=device)
+        # Sort by tile_id to group them
+        sort_order = torch.argsort(tile_ids)
+        sorted_tiles = tile_ids[sort_order]
+        sorted_gauss = gauss_ids[sort_order]
+
+        # Compute position within each tile
+        # sorted_tiles is sorted, so use unique_consecutive to find group boundaries
+        _, counts = torch.unique_consecutive(sorted_tiles, return_counts=True)
+        # Build offsets: [0,1,2, 0,1, 0, ...] for groups of sizes [3,2,1,...]
+        offsets = torch.cat([torch.arange(c, device=device) for c in counts.tolist()])
+
+        tile_gauss_idx[sorted_tiles.long(), offsets] = sorted_gauss
+    else:
+        max_per_tile = 1
+        tile_gauss_idx = torch.full((n_tiles, max_per_tile), -1, dtype=torch.int32, device=device)
+        tile_gauss_count = torch.zeros(n_tiles, dtype=torch.int32, device=device)
 
     return {
         'means_2d': means_2d.contiguous(),
@@ -273,6 +304,8 @@ def gaussian_splat_forward(
     Returns:
         image: (H, W, 3) rendered RGB image
     """
+    import time as _time
+
     device = means_3d.device
     dtype = means_3d.dtype
     TILE_SIZE = 16
@@ -283,6 +316,9 @@ def gaussian_splat_forward(
         return image
 
     # Preprocess: project, sort, assign to tiles
+    torch.cuda.synchronize() if torch.cuda.is_available() else None
+    _t0 = _time.perf_counter()
+
     data = preprocess_gaussians(
         means_3d, scales, quats, opacities, colors,
         viewmatrix, projmatrix, img_h, img_w, tile_size=TILE_SIZE,
@@ -292,10 +328,16 @@ def gaussian_splat_forward(
     if data is None:
         return image
 
+    torch.cuda.synchronize() if torch.cuda.is_available() else None
+    _preprocess_ms = (_time.perf_counter() - _t0) * 1000
+
     # Flatten cov2d_inv from (N, 2, 2) to (N, 4) for kernel
     cov2d_inv_flat = data['cov2d_inv'].reshape(-1, 4).contiguous()
 
     n_tiles = data['tiles_x'] * data['tiles_y']
+
+    torch.cuda.synchronize() if torch.cuda.is_available() else None
+    _t1 = _time.perf_counter()
 
     _gaussian_splat_kernel[(n_tiles,)](
         data['means_2d'], cov2d_inv_flat,
@@ -308,5 +350,11 @@ def gaussian_splat_forward(
         TILE_SIZE=TILE_SIZE,
         PIXELS_PER_TILE=TILE_SIZE * TILE_SIZE,
     )
+
+    torch.cuda.synchronize() if torch.cuda.is_available() else None
+    _kernel_ms = (_time.perf_counter() - _t1) * 1000
+    print(f"[3DGS] preprocess={_preprocess_ms:.1f}ms  kernel={_kernel_ms:.1f}ms  "
+          f"total={_preprocess_ms+_kernel_ms:.1f}ms  max_per_tile={data['max_per_tile']}  "
+          f"n_tiles={n_tiles}")
 
     return image

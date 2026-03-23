@@ -57,13 +57,19 @@ def _swiglu_fwd_kernel(
     gate = tl.load(GATE_ptr + offsets, mask=mask, other=0.0)
     up = tl.load(UP_ptr + offsets, mask=mask, other=0.0)
 
+    # Cast to FP32 for sigmoid/exp (Triton tl.math.exp requires FP32+)
+    gate_f32 = gate.to(tl.float32)
+    up_f32 = up.to(tl.float32)
+
     # Compute SiLU(gate) = gate * sigmoid(gate) entirely in registers
     # sigmoid(x) = 1 / (1 + exp(-x))
-    sigmoid_gate = tl.sigmoid(gate)
-    silu_gate = gate * sigmoid_gate
+    sigmoid_gate = tl.sigmoid(gate_f32)
+    silu_gate = gate_f32 * sigmoid_gate
 
     # Fused output: SiLU(gate) * up
-    out = silu_gate * up
+    out = silu_gate * up_f32
+    # Cast back to input dtype
+    out = out.to(gate.dtype)
 
     # Store result back to HBM
     tl.store(OUT_ptr + offsets, out, mask=mask)
@@ -104,24 +110,29 @@ def _swiglu_bwd_kernel(
     up = tl.load(UP_ptr + offsets, mask=mask, other=0.0)
     dout = tl.load(DOUT_ptr + offsets, mask=mask, other=0.0)
 
+    # Cast to FP32 for sigmoid/exp (Triton tl.math.exp requires FP32+)
+    gate_f32 = gate.to(tl.float32)
+    up_f32 = up.to(tl.float32)
+    dout_f32 = dout.to(tl.float32)
+
     # Compute sigmoid(gate) once — reused for both d_gate and d_up
-    sigmoid_gate = tl.sigmoid(gate)
+    sigmoid_gate = tl.sigmoid(gate_f32)
 
     # SiLU(gate) = gate * sigmoid(gate)
-    silu_gate = gate * sigmoid_gate
+    silu_gate = gate_f32 * sigmoid_gate
 
     # d_up = dout * SiLU(gate)
-    d_up = dout * silu_gate
+    d_up = dout_f32 * silu_gate
 
     # SiLU'(gate) = sigmoid(gate) * (1 + gate * (1 - sigmoid(gate)))
-    dsilu_gate = sigmoid_gate * (1.0 + gate * (1.0 - sigmoid_gate))
+    dsilu_gate = sigmoid_gate * (1.0 + gate_f32 * (1.0 - sigmoid_gate))
 
     # d_gate = dout * up * SiLU'(gate)
-    d_gate = dout * up * dsilu_gate
+    d_gate = dout_f32 * up_f32 * dsilu_gate
 
-    # Store both gradients (2 HBM writes)
-    tl.store(DGATE_ptr + offsets, d_gate, mask=mask)
-    tl.store(DUP_ptr + offsets, d_up, mask=mask)
+    # Store both gradients, cast back to input dtype (2 HBM writes)
+    tl.store(DGATE_ptr + offsets, d_gate.to(gate.dtype), mask=mask)
+    tl.store(DUP_ptr + offsets, d_up.to(up.dtype), mask=mask)
 
 
 # ============================================================
