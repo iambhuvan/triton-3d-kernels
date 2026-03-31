@@ -28,7 +28,7 @@ app = modal.App("triton-3d-demo")
 # Key considerations:
 #   - TripoSR needs: omegaconf, einops, transformers, trimesh, rembg, huggingface-hub
 #   - torchmcubes needs compilation from source (marching cubes for mesh extraction)
-#   - Our kernels need: triton
+#   - My kernels need: triton
 #   - We pre-download model weights into the image to avoid re-downloading each run
 #
 
@@ -69,7 +69,7 @@ demo_image = (
     })
     # Install torchmcubes from source (needs nvcc for CUDA kernels)
     .pip_install("git+https://github.com/tatsy/torchmcubes.git")
-    # Copy our entire project (PROJECT_ROOT resolves to absolute path)
+    # Copy the project (PROJECT_ROOT resolves to absolute path)
     .add_local_dir(
         PROJECT_ROOT,
         "/root/triton-3d-kernels",
@@ -146,7 +146,7 @@ def test_triposr():
     memory=16384,
 )
 def benchmark_attn():
-    """Run attention benchmark: default PyTorch vs our Triton kernel."""
+    """Run attention benchmark: default PyTorch vs my Triton kernel."""
     import subprocess
     import os
 
@@ -216,24 +216,6 @@ def full_pipeline():
     return result.returncode
 
 
-@app.function(
-    image=demo_image,
-    gpu="H100",
-    timeout=300,
-    memory=16384,
-)
-def test_3dgs():
-    """Test 3D Gaussian Splatting rendering."""
-    import subprocess
-    import os
-    os.chdir("/root/triton-3d-kernels")
-    result = subprocess.run(
-        ["python", "demo/test_3dgs.py"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        timeout=120,
-    )
-    print(result.stdout)
-    return result.returncode
 
 
 @app.function(

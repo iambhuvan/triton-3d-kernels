@@ -1,7 +1,7 @@
 """
 Flash Attention v2 — Triton Kernel (Dao 2023)
 
-Key differences from v1 (our flash_attn.py):
+Key differences from v1 (Dao et al. 2022):
 
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                        v1 vs v2 Changes                                  │
@@ -26,12 +26,6 @@ Key differences from v1 (our flash_attn.py):
 │ Autotuning           │ Fixed block sizes     │ @triton.autotune over     │
 │                      │                       │ BLOCK_Q, BLOCK_KV,        │
 │                      │                       │ num_warps, num_stages     │
-├──────────────────────┼───────────────────────┼───────────────────────────┤
-│ Warp specialization  │ All warps do same     │ In CUDA: split warps for  │
-│ (CUDA only)          │ work                  │ QK matmul vs PV matmul.   │
-│                      │                       │ Triton: not possible, but │
-│                      │                       │ we get similar benefit    │
-│                      │                       │ from autotuned num_warps  │
 └──────────────────────┴───────────────────────┴───────────────────────────┘
 
 Why v2 is faster:

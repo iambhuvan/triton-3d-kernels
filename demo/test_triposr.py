@@ -1,10 +1,10 @@
 """
-test_triposr.py — Verify TripoSR works end-to-end, then test with our Triton kernel.
+test_triposr.py — Verify TripoSR works end-to-end, then test with my Triton kernel.
 
 This script:
   1. Loads the TripoSR model (downloads weights from HuggingFace)
   2. Runs inference on a sample image with DEFAULT attention
-  3. Runs inference with our TRITON attention kernel swapped in
+  3. Runs inference with my TRITON attention kernel swapped in
   4. Compares outputs for correctness (cosine similarity)
   5. Reports timing for both paths
 
@@ -30,7 +30,7 @@ PROJECT_ROOT = os.path.dirname(DEMO_DIR)
 
 # Add TripoSR to path
 sys.path.insert(0, os.path.join(DEMO_DIR, "triposr"))
-# Add project root for our kernels
+# Add project root for my kernels
 sys.path.insert(0, PROJECT_ROOT)
 
 from tsr.system import TSR
@@ -129,9 +129,9 @@ def test_basic_inference(model, image, device: str = "cuda:0"):
 
 
 def test_triton_kernel(model, image, default_scene_codes, device: str = "cuda:0"):
-    """Test 2: Swap in our Triton kernel and verify correctness."""
+    """Test 2: Swap in my Triton kernel and verify correctness."""
     log.info("=" * 60)
-    log.info("TEST 2: TripoSR with our Triton Flash Attention kernel")
+    log.info("TEST 2: TripoSR with my Triton Flash Attention kernel")
     log.info("=" * 60)
 
     # Count attention layers
@@ -143,10 +143,10 @@ def test_triton_kernel(model, image, default_scene_codes, device: str = "cuda:0"
     if len(info) > 5:
         log.info(f"    ... and {len(info) - 5} more")
 
-    # Swap attention to our Triton kernel
+    # Swap attention to my Triton kernel
     original_processors = swap_attention(model, use_timing=False)
 
-    # Run forward pass with our kernel
+    # Run forward pass with my kernel
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     triton_scene_codes = run_forward(model, image, device)

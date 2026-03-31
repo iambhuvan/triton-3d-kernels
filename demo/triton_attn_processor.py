@@ -1,16 +1,16 @@
 """
 TritonAttnProcessor — Drop-in replacement for TripoSR's AttnProcessor2_0
-that uses our custom Triton Flash Attention kernel.
+that uses my custom Triton Flash Attention v2 kernel.
 
-This replaces PyTorch's F.scaled_dot_product_attention with our
-flash_attention_forward kernel from kernels/flash_attn.py.
+This replaces PyTorch's F.scaled_dot_product_attention with my
+flash_attention_v2_forward kernel from kernels/flash_attn_v2.py.
 
 Usage:
     from demo.triton_attn_processor import swap_attention, restore_attention
 
     model = TSR.from_pretrained(...)
-    swap_attention(model)     # Now uses our Triton kernel
-    model([image], device)    # Inference with our kernel
+    swap_attention(model)     # Now uses my Triton kernel
+    model([image], device)    # Inference with my kernel
     restore_attention(model)  # Revert to default
 """
 
@@ -24,9 +24,9 @@ import torch.nn.functional as F
 import sys
 import os
 
-# Add project root to path so we can import our kernels
+# Add project root to path so we can import my kernels
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from kernels.flash_attn import flash_attention_forward
+from kernels.flash_attn_v2 import flash_attention_v2_forward
 
 # Also add triposr to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "triposr"))
@@ -35,7 +35,7 @@ from tsr.models.transformer.attention import Attention, AttnProcessor2_0
 
 class TritonAttnProcessor:
     """
-    Attention processor that uses our custom Triton Flash Attention kernel
+    Attention processor that uses my custom Triton Flash Attention kernel
     instead of PyTorch's F.scaled_dot_product_attention.
 
     Follows the same interface as TripoSR's AttnProcessor2_0.
@@ -83,7 +83,7 @@ class TritonAttnProcessor:
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
 
-        # Reshape to (B, heads, S, head_dim) — matches our kernel's expected input
+        # Reshape to (B, heads, S, head_dim) — matches my kernel's expected input
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
 
@@ -92,19 +92,19 @@ class TritonAttnProcessor:
         value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
         # ============================================================
-        # HERE IS THE SWAP: our Triton kernel instead of F.sdpa
+        # HERE IS THE SWAP: my Triton kernel instead of F.sdpa
         # ============================================================
         #
-        # Our kernel requires:
+        # My kernel requires:
         #   - Input shape: (B, H, S, D) — already in this format
         #   - dtype: float16 (Triton's tl.dot requires float16/bfloat16)
         #   - Contiguous tensors
         #   - D (head_dim) must be in {16, 32, 64, 128}
         #   - Q and K must have the SAME sequence length
-        #     (our kernel uses a single S for both Q and K strides)
+        #     (my kernel uses a single S for both Q and K strides)
         #
         # For cross-attention (Q_len != KV_len), we fall back to PyTorch SDPA.
-        # Self-attention (the bulk of computation) uses our Triton kernel.
+        # Self-attention (the bulk of computation) uses my Triton kernel.
 
         orig_dtype = query.dtype
         is_cross_attn = (query.shape[2] != key.shape[2])
@@ -115,13 +115,13 @@ class TritonAttnProcessor:
                 query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
             )
         else:
-            # Self-attention: use our Triton Flash Attention kernel
+            # Self-attention: use my Triton Flash Attention kernel
             q_f16 = query.contiguous().half()
             k_f16 = key.contiguous().half()
             v_f16 = value.contiguous().half()
 
-            # Call our kernel (causal=False for TripoSR — it's not autoregressive)
-            hidden_states = flash_attention_forward(q_f16, k_f16, v_f16, causal=False)
+            # Call my kernel (causal=False for TripoSR — it's not autoregressive)
+            hidden_states = flash_attention_v2_forward(q_f16, k_f16, v_f16, causal=False)
 
             # Cast back to original dtype
             hidden_states = hidden_states.to(orig_dtype)
@@ -251,7 +251,7 @@ class DefaultAttnProcessorWithTiming(AttnProcessor2_0):
 
 def swap_attention(model, use_timing=False):
     """
-    Replace all Attention processors in the model with our Triton kernel.
+    Replace all Attention processors in the model with my Triton kernel.
 
     Args:
         model: TripoSR model (TSR instance)
